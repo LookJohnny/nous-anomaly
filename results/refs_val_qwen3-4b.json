@@ -1,0 +1,402 @@
+[
+ {
+  "site": "reply",
+  "pool": "pre",
+  "layer": 9,
+  "split": "val",
+  "n_fit": 797,
+  "n_calib": 248,
+  "n_eval_normal": 409,
+  "detectors": {},
+  "references": {
+   "hostile": {
+    "probe_auroc": 0.7111486486486487,
+    "text_auroc": 0.9431306306306306
+   },
+   "syco": {
+    "probe_auroc": 0.5866568452067769,
+    "text_auroc": 0.713564137640745
+   },
+   "anger": {
+    "probe_auroc": 0.520625,
+    "text_auroc": 1.0
+   },
+   "joy": {
+    "probe_auroc": 0.49250000000000005,
+    "text_auroc": 1.0
+   },
+   "sadness": {
+    "probe_auroc": 0.49624999999999997,
+    "text_auroc": 1.0
+   }
+  }
+ },
+ {
+  "site": "reply",
+  "pool": "pre",
+  "layer": 14,
+  "split": "val",
+  "n_fit": 797,
+  "n_calib": 248,
+  "n_eval_normal": 409,
+  "detectors": {},
+  "references": {
+   "hostile": {
+    "probe_auroc": 0.7359234234234234,
+    "text_auroc": 0.9431306306306306
+   },
+   "syco": {
+    "probe_auroc": 0.6078080606124382,
+    "text_auroc": 0.713564137640745
+   },
+   "anger": {
+    "probe_auroc": 0.511875,
+    "text_auroc": 1.0
+   },
+   "joy": {
+    "probe_auroc": 0.49750000000000005,
+    "text_auroc": 1.0
+   },
+   "sadness": {
+    "probe_auroc": 0.49750000000000005,
+    "text_auroc": 1.0
+   }
+  }
+ },
+ {
+  "site": "reply",
+  "pool": "pre",
+  "layer": 18,
+  "split": "val",
+  "n_fit": 797,
+  "n_calib": 248,
+  "n_eval_normal": 409,
+  "detectors": {},
+  "references": {
+   "hostile": {
+    "probe_auroc": 0.7967342342342343,
+    "text_auroc": 0.9431306306306306
+   },
+   "syco": {
+    "probe_auroc": 0.7013574660633485,
+    "text_auroc": 0.713564137640745
+   },
+   "anger": {
+    "probe_auroc": 0.510625,
+    "text_auroc": 1.0
+   },
+   "joy": {
+    "probe_auroc": 0.495,
+    "text_auroc": 1.0
+   },
+   "sadness": {
+    "probe_auroc": 0.49375000000000013,
+    "text_auroc": 1.0
+   }
+  }
+ },
+ {
+  "site": "reply",
+  "pool": "pre",
+  "layer": 22,
+  "split": "val",
+  "n_fit": 797,
+  "n_calib": 248,
+  "n_eval_normal": 409,
+  "detectors": {},
+  "references": {
+   "hostile": {
+    "probe_auroc": 0.838963963963964,
+    "text_auroc": 0.9431306306306306
+   },
+   "syco": {
+    "probe_auroc": 0.8065873934546985,
+    "text_auroc": 0.713564137640745
+   },
+   "anger": {
+    "probe_auroc": 0.511875,
+    "text_auroc": 1.0
+   },
+   "joy": {
+    "probe_auroc": 0.49687500000000007,
+    "text_auroc": 1.0
+   },
+   "sadness": {
+    "probe_auroc": 0.49312500000000004,
+    "text_auroc": 1.0
+   }
+  }
+ },
+ {
+  "site": "reply",
+  "pool": "pre",
+  "layer": 27,
+  "split": "val",
+  "n_fit": 797,
+  "n_calib": 248,
+  "n_eval_normal": 409,
+  "detectors": {},
+  "references": {
+   "hostile": {
+    "probe_auroc": 0.8738738738738739,
+    "text_auroc": 0.9431306306306306
+   },
+   "syco": {
+    "probe_auroc": 0.8690939703251606,
+    "text_auroc": 0.713564137640745
+   },
+   "anger": {
+    "probe_auroc": 0.5175,
+    "text_auroc": 1.0
+   },
+   "joy": {
+    "probe_auroc": 0.490625,
+    "text_auroc": 1.0
+   },
+   "sadness": {
+    "probe_auroc": 0.49687500000000007,
+    "text_auroc": 1.0
+   }
+  }
+ },
+ {
+  "site": "reply",
+  "pool": "mean",
+  "layer": 9,
+  "split": "val",
+  "n_fit": 797,
+  "n_calib": 248,
+  "n_eval_normal": 409,
+  "detectors": {},
+  "references": {
+   "hostile": {
+    "probe_auroc": 0.9667792792792793,
+    "text_auroc": 0.9431306306306306
+   },
+   "syco": {
+    "probe_auroc": 0.7049352835946543,
+    "text_auroc": 0.713564137640745
+   },
+   "anger": {
+    "probe_auroc": 1.0,
+    "text_auroc": 1.0
+   },
+   "joy": {
+    "probe_auroc": 1.0,
+    "text_auroc": 1.0
+   },
+   "sadness": {
+    "probe_auroc": 1.0,
+    "text_auroc": 1.0
+   }
+  }
+ },
+ {
+  "site": "reply",
+  "pool": "mean",
+  "layer": 14,
+  "split": "val",
+  "n_fit": 797,
+  "n_calib": 248,
+  "n_eval_normal": 409,
+  "detectors": {},
+  "references": {
+   "hostile": {
+    "probe_auroc": 0.9459459459459458,
+    "text_auroc": 0.9431306306306306
+   },
+   "syco": {
+    "probe_auroc": 0.6892560244133431,
+    "text_auroc": 0.713564137640745
+   },
+   "anger": {
+    "probe_auroc": 1.0,
+    "text_auroc": 1.0
+   },
+   "joy": {
+    "probe_auroc": 1.0,
+    "text_auroc": 1.0
+   },
+   "sadness": {
+    "probe_auroc": 1.0,
+    "text_auroc": 1.0
+   }
+  }
+ },
+ {
+  "site": "reply",
+  "pool": "mean",
+  "layer": 18,
+  "split": "val",
+  "n_fit": 797,
+  "n_calib": 248,
+  "n_eval_normal": 409,
+  "detectors": {},
+  "references": {
+   "hostile": {
+    "probe_auroc": 0.9515765765765766,
+    "text_auroc": 0.9431306306306306
+   },
+   "syco": {
+    "probe_auroc": 0.8146900978638324,
+    "text_auroc": 0.713564137640745
+   },
+   "anger": {
+    "probe_auroc": 1.0,
+    "text_auroc": 1.0
+   },
+   "joy": {
+    "probe_auroc": 1.0,
+    "text_auroc": 1.0
+   },
+   "sadness": {
+    "probe_auroc": 1.0,
+    "text_auroc": 1.0
+   }
+  }
+ },
+ {
+  "site": "reply",
+  "pool": "mean",
+  "layer": 22,
+  "split": "val",
+  "n_fit": 797,
+  "n_calib": 248,
+  "n_eval_normal": 409,
+  "detectors": {},
+  "references": {
+   "hostile": {
+    "probe_auroc": 0.9380630630630631,
+    "text_auroc": 0.9431306306306306
+   },
+   "syco": {
+    "probe_auroc": 0.8323687256655793,
+    "text_auroc": 0.713564137640745
+   },
+   "anger": {
+    "probe_auroc": 1.0,
+    "text_auroc": 1.0
+   },
+   "joy": {
+    "probe_auroc": 1.0,
+    "text_auroc": 1.0
+   },
+   "sadness": {
+    "probe_auroc": 1.0,
+    "text_auroc": 1.0
+   }
+  }
+ },
+ {
+  "site": "reply",
+  "pool": "mean",
+  "layer": 27,
+  "split": "val",
+  "n_fit": 797,
+  "n_calib": 248,
+  "n_eval_normal": 409,
+  "detectors": {},
+  "references": {
+   "hostile": {
+    "probe_auroc": 0.9515765765765766,
+    "text_auroc": 0.9431306306306306
+   },
+   "syco": {
+    "probe_auroc": 0.7997474481742608,
+    "text_auroc": 0.713564137640745
+   },
+   "anger": {
+    "probe_auroc": 1.0,
+    "text_auroc": 1.0
+   },
+   "joy": {
+    "probe_auroc": 1.0,
+    "text_auroc": 1.0
+   },
+   "sadness": {
+    "probe_auroc": 1.0,
+    "text_auroc": 1.0
+   }
+  }
+ },
+ {
+  "site": "user",
+  "pool": "mean",
+  "layer": 9,
+  "split": "val",
+  "n_fit": 246,
+  "n_calib": 72,
+  "n_eval_normal": 69,
+  "detectors": {},
+  "references": {
+   "distress": {
+    "probe_auroc": 0.995169082125604,
+    "text_auroc": 0.9942028985507246
+   }
+  }
+ },
+ {
+  "site": "user",
+  "pool": "mean",
+  "layer": 14,
+  "split": "val",
+  "n_fit": 246,
+  "n_calib": 72,
+  "n_eval_normal": 69,
+  "detectors": {},
+  "references": {
+   "distress": {
+    "probe_auroc": 0.9971014492753624,
+    "text_auroc": 0.9942028985507246
+   }
+  }
+ },
+ {
+  "site": "user",
+  "pool": "mean",
+  "layer": 18,
+  "split": "val",
+  "n_fit": 246,
+  "n_calib": 72,
+  "n_eval_normal": 69,
+  "detectors": {},
+  "references": {
+   "distress": {
+    "probe_auroc": 0.9971014492753624,
+    "text_auroc": 0.9942028985507246
+   }
+  }
+ },
+ {
+  "site": "user",
+  "pool": "mean",
+  "layer": 22,
+  "split": "val",
+  "n_fit": 246,
+  "n_calib": 72,
+  "n_eval_normal": 69,
+  "detectors": {},
+  "references": {
+   "distress": {
+    "probe_auroc": 0.991304347826087,
+    "text_auroc": 0.9942028985507246
+   }
+  }
+ },
+ {
+  "site": "user",
+  "pool": "mean",
+  "layer": 27,
+  "split": "val",
+  "n_fit": 246,
+  "n_calib": 72,
+  "n_eval_normal": 69,
+  "detectors": {},
+  "references": {
+   "distress": {
+    "probe_auroc": 0.9942028985507246,
+    "text_auroc": 0.9942028985507246
+   }
+  }
+ }
+]
