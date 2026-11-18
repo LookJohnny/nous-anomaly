@@ -10,6 +10,7 @@ percentile of their scores. `fpr_new_normal` is the share of normal records in t
 and for the emotion set new topics) above that threshold; it should stay near 0.05. `shift_auroc` compares the same
 two sets and should stay near 0.5.
 
+  python -m nous_anomaly.evaluate fewshot --records data/records.jsonl --feats feats/qwen3-4b --out out/fewshot_val.json
   python -m nous_anomaly.evaluate sweep  --records data/records.jsonl --feats feats/qwen3-4b --out out/sweep_val.json
   python -m nous_anomaly.evaluate freeze --sweep out/sweep_val.json --out out/FREEZE.json
   python -m nous_anomaly.evaluate test   --records data/records.jsonl --feats feats/qwen3-4b --freeze out/FREEZE.json --out out/test.json
@@ -128,6 +129,77 @@ def evaluate(records, feats, *, site, pool, layer, split="val", detectors=DEFAUL
     return out
 
 
+FEWSHOT_KS = (1, 2, 5, 10, 20, None)          # None = every positive example in the dev split
+
+
+def fewshot_settings(feats):
+    """Fixed in advance, not selected on labels: the reply mean at mid-depth, the pre-reply state at the deepest
+    extracted layer, and the user message mean at mid-depth."""
+    mid, deep = feats.layers[len(feats.layers) // 2], feats.layers[-1]
+    return [("reply", "mean", mid), ("reply", "pre", deep), ("user", "mean", mid)]
+
+
+def fewshot(records, feats, *, split="val", ks=FEWSHOT_KS, draws=20, seed=0):
+    """How many labelled examples does a concept need? For each concept and k: draw k positive dev examples, build
+    the detector, score the evaluated split; repeat `draws` times.
+      few_shot  whitened mean difference; geometry from ALL normal dev records of the site
+      probe     logistic regression on the same k positives against the same-source normal dev records
+      text      character n-gram classifier on the same examples
+    Positives and negatives of a concept come from the same source, as in evaluate()."""
+    from .detectors import FewShotDirection
+    out = dict(split=split, model=feats.meta.get("model"), draws=draws, runs=[])
+    for site, pool, layer in fewshot_settings(feats):
+        rs = [r for r in records if r["site"] == site and r["id"] in feats]
+        X = lambda items: feats.get([r["id"] for r in items], pool, layer)
+        normal = [r for r in rs if r["split"] == "dev" and is_normal(r)]
+        if len(normal) < 20:
+            continue
+        base = FewShotDirection().fit_normal(X(normal))
+        run = dict(site=site, pool=pool, layer=layer, n_normal=len(normal), concepts={})
+        for source in sorted({r["source"] for r in rs}):
+            for concept in CONCEPTS:
+                tr_pos = [r for r in rs if r["split"] == "dev" and r["source"] == source and is_positive(r, concept)]
+                tr_neg = [r for r in normal if r["source"] == source]
+                pos = [r for r in rs if r["split"] == split and r["source"] == source and is_positive(r, concept)]
+                neg = [r for r in rs if r["split"] == split and r["source"] == source and is_normal(r)]
+                if min(len(tr_pos), len(tr_neg), len(pos), len(neg)) < MIN_POSITIVES:
+                    continue
+                y = [1] * len(pos) + [0] * len(neg)
+                X_pos, X_neg, X_eval = X(tr_pos), X(tr_neg), X(pos + neg)
+                neg_text, eval_text = [r["target"] for r in tr_neg], [r["target"] for r in pos + neg]
+                rng = np.random.default_rng(seed); curve = {}
+                for k in ks:
+                    n = len(tr_pos) if k is None else k
+                    if n > len(tr_pos):
+                        continue
+                    scores = {"few_shot": [], "probe": [], "text": []}
+                    for _ in range(1 if n == len(tr_pos) else draws):
+                        idx = rng.choice(len(tr_pos), n, replace=False)
+                        scores["few_shot"].append(auroc(y, base.fit_concept(X_pos[idx], X_neg).score(X_eval)))
+                        labels = [1] * n + [0] * len(tr_neg)
+                        probe = LinearProbe().fit(np.concatenate([X_pos[idx], X_neg]), labels)
+                        scores["probe"].append(auroc(y, probe.score(X_eval)))
+                        scores["text"].append(auroc(y, text_scores([tr_pos[i]["target"] for i in idx] + neg_text,
+                                                                    labels, eval_text)))
+                    curve["all" if k is None else str(k)] = dict(
+                        n=n, **{name: dict(mean=float(np.mean(v)), sd=float(np.std(v))) for name, v in scores.items()})
+                run["concepts"][f"{source}/{concept}"] = dict(n_pos=len(pos), n_neg=len(neg), n_dev_pos=len(tr_pos),
+                                                               curve=curve)
+        out["runs"].append(run)
+    return out
+
+
+def fewshot_table(result, method="few_shot"):
+    ks = ["1", "2", "5", "10", "20", "all"]
+    lines = [f"| site | pool | layer | concept | eval pos | " + " | ".join("k=" + k for k in ks) + " |",
+             "|---|---|---|---|---|" + "---|" * len(ks)]
+    for run in result["runs"]:
+        for name, c in run["concepts"].items():
+            cells = [f"{c['curve'][k][method]['mean']:.3f}" if k in c["curve"] else "" for k in ks]
+            lines.append(f"| {run['site']} | {run['pool']} | {run['layer']} | {name} | {c['n_pos']} | " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
 def sweep(records, feats, *, split="val", detectors=DEFAULT_DETECTORS, n_boot=0):
     runs = []
     for site, pools in SITE_POOLS.items():
@@ -189,6 +261,9 @@ def main(argv=None):
     from .extract import Features
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("fewshot")
+    p.add_argument("--records", required=True); p.add_argument("--feats", required=True)
+    p.add_argument("--out", required=True); p.add_argument("--draws", type=int, default=20)
     for name in ("sweep", "test"):
         p = sub.add_parser(name)
         p.add_argument("--records", required=True); p.add_argument("--feats", required=True)
@@ -206,6 +281,12 @@ def main(argv=None):
             raise SystemExit("freeze file already exists; a freeze is written once")
         _write(args.out, frozen); print(json.dumps(frozen, indent=1)); return
     records, feats = load(args.records), Features(args.feats)
+    if args.command == "fewshot":
+        result = fewshot(records, feats, draws=args.draws)
+        _write(args.out, result)
+        for method in ("few_shot", "probe", "text"):
+            print(f"\n{method}\n" + fewshot_table(result, method))
+        return
     if args.command == "sweep":
         result = sweep(records, feats, detectors=tuple(args.detectors))
     else:

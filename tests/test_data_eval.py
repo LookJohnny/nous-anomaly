@@ -127,3 +127,16 @@ def test_real_repo_adapters():
     assert collections.Counter(r["labels"]["emotion"] for r in emo) == {e: 240 for e in ("joy", "sadness", "anger", "neutral")}
     assert all(r["target"].startswith(r["target"][:1]) and "我的看法是：" in r["target"] for r in emo)
     assert sum(data.is_normal(r) for r in records) > 1500
+
+
+def test_fewshot_curve_rises_with_examples_and_reports_all_methods():
+    records, feats = _records_and_features()
+    result = evaluate.fewshot(records, feats, draws=5)
+    assert [(r["site"], r["pool"], r["layer"]) for r in result["runs"]] == [("reply", "mean", 2), ("reply", "pre", 2), ("user", "mean", 2)]
+    reply = result["runs"][0]["concepts"]
+    assert set(reply) == {"c1/hostile", "emo/anger"} and set(result["runs"][2]["concepts"]) == {"c2/distress"}
+    curve = reply["c1/hostile"]["curve"]
+    assert list(curve) == ["1", "2", "5", "10", "20", "all"] and curve["all"]["n"] == 80
+    assert curve["5"]["few_shot"]["mean"] > 0.95 and curve["all"]["few_shot"]["sd"] == 0.0
+    assert set(curve["5"]) == {"n", "few_shot", "probe", "text"}
+    assert "c1/hostile" in evaluate.fewshot_table(result) and "k=all" in evaluate.fewshot_table(result, "text")

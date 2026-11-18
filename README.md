@@ -9,7 +9,7 @@
 
 它是 [Nous Agent Safety](https://github.com/LookJohnny/nous-agent-safety) 的研究组件，对应其中"读取模型内部状态来监测风险"的方向。
 
-> 状态：研究原型。目前只在一个模型（Qwen3-4B）的验证集上跑过一轮，测试集没有开封。所有标签来自 LLM 评分者，没有人工校准。
+> 状态：研究原型。目前只在一个模型（Qwen3-4B）的验证集上跑过两轮，测试集没有开封。所有标签来自 LLM 评分者，没有人工校准。
 
 ## 第一轮结果
 
@@ -44,6 +44,32 @@
 
 原始数字在 [`results/`](results/)，只含汇总指标，不含对话原文。
 
+## 第二轮结果：每个概念给几个样例
+
+第一轮说明"零样例"不行。第二轮改成：正常语料提供几何结构（标准化、白化），每个概念只给 k 个阳性样例来定方向（`FewShotDirection`）。
+同一批 Qwen3-4B 激活，验证集，每个 k 重复抽样 20 次取平均。层和读数方式事先固定，没有按标签挑选。
+
+| 概念 | 读数位置 | k=1 | k=5 | k=20 | 全部样例 | 同样 5 个样例的文本分类器 |
+|---|---|---|---|---|---|---|
+| 敌意 | 回复均值，第 18 层 | 0.84 | 0.89 | 0.89 | 0.90 | 0.88 |
+| 敌意 | **回复之前**，第 27 层 | 0.85 | 0.89 | 0.89 | 0.88 | 不适用（还没有文字） |
+| 用户困扰 | 用户消息均值，第 18 层 | 0.96 | 0.99 | 0.99 | 0.99 | 0.99 |
+| 愤怒 / 喜悦 / 悲伤 | 回复均值，第 18 层 | 0.92–1.00 | 0.99–1.00 | 1.00 | 1.00 | 1.00 |
+| 附和 | 回复均值，第 18 层 | 0.55 | 0.61 | 0.67 | 0.75 | 0.58 |
+| 附和 | **回复之前**，第 27 层 | 0.57 | 0.67 | 0.76 | 0.80 | 不适用 |
+
+怎么读这张表：
+
+1. **几个样例就够定方向。** 敌意从零样例时的接近随机，升到 1 个样例 0.84、5 个样例 0.89。用户困扰 1 个样例就有 0.96。
+2. **回复写完之后，激活并不比文字更准。** 给同样 5 个样例，文本分类器在敌意上是 0.88，样例更多时还略高（全部样例 0.94 对 0.90）。
+3. **激活的价值在"提前"和"难例"。** 模型开口之前，文字还不存在，激活已经能给出 0.85–0.89 的敌意预警。附和这种文字上看不出来的概念，激活在回复之前达到 0.80，文本分类器用全部样例也只有 0.71。
+4. **附和仍然是难例。** 它需要上百个样例才到 0.80，离可用还有距离。
+5. **一个合理性检查。** 情绪数据在"回复之前"的读数是 0.50。这批数据里情绪只出现在回复中，提示完全相同，所以回复之前不可能读得出来。结果符合预期。
+
+和有监督逻辑回归探针相比，少样例方向在样例很少时相当（敌意 k=5：0.89 对 0.92），样例多时略低（0.90 对 0.95）。完整曲线在 [`results/fewshot_val_qwen3-4b.json`](results/fewshot_val_qwen3-4b.json)。
+
+这一轮同样是探索性的：验证集的敌意只有 12 个阳性样本，标签没有人工校准。
+
 ## 方法
 
 ### 读哪里的激活
@@ -68,6 +94,7 @@
 | Isolation Forest | 标准的孤立森林 |
 | 自编码器 | 小型瓶颈网络的重构误差 |
 | 概念子空间 | 把异常分数拆成两部分：已知风险方向之内，和之外 |
+| 少样例方向 | 正常语料提供白化空间，k 个阳性样例的均值减正常均值作为方向 |
 | 线性探针（有监督） | 标准化后做逻辑回归，二分类或多分类 |
 
 ### 为什么要"去内容"
@@ -99,7 +126,7 @@
 git clone https://github.com/LookJohnny/nous-anomaly.git
 cd nous-anomaly
 python -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m pytest -q        # 22 项；没有数据源时跳过 1 项
+.venv/bin/python -m pytest -q        # 24 项；没有数据源时跳过 1 项
 ```
 
 三步流程：
@@ -108,6 +135,10 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt
 # 1. 提取激活。多卡时每张卡跑一个分片；中断后重跑会跳过已完成的部分
 python -m nous_anomaly.extract --model Qwen/Qwen3-4B-Instruct-2507 \
     --records data/records.jsonl --out feats/qwen3-4b --shard 0/1
+
+# 可选：每个概念需要几个样例（少样例曲线）
+python -m nous_anomaly.evaluate fewshot --records data/records.jsonl \
+    --feats feats/qwen3-4b --out out/fewshot_val.json
 
 # 2. 在验证集上扫描所有层和读数方式
 python -m nous_anomaly.evaluate sweep --records data/records.jsonl \
@@ -157,10 +188,10 @@ python -m nous_anomaly.evaluate test --records data/records.jsonl \
 |---|---|
 | [`nous_anomaly/data.py`](nous_anomaly/data.py) | 记录格式、校验、数据集适配器 |
 | [`nous_anomaly/extract.py`](nous_anomaly/extract.py) | 从任意 HuggingFace 因果语言模型提取激活，支持分片和断点续跑 |
-| [`nous_anomaly/detectors.py`](nous_anomaly/detectors.py) | 六种单类检测器和线性探针 |
+| [`nous_anomaly/detectors.py`](nous_anomaly/detectors.py) | 单类检测器、少样例方向和线性探针 |
 | [`nous_anomaly/evaluate.py`](nous_anomaly/evaluate.py) | 指标、bootstrap、换话题对照、冻结和一次性测试 |
 | [`tests/`](tests/) | 合成数据上的检测器测试；用随机初始化的微型模型验证取数位置 |
-| [`results/`](results/) | 第一轮的汇总指标 |
+| [`results/`](results/) | 两轮的汇总指标 |
 
 ## 局限
 
@@ -172,7 +203,9 @@ python -m nous_anomaly.evaluate test --records data/records.jsonl \
 
 ## 下一步
 
-- **半监督检测**：给检测器少量已知风险样本，看需要多少才能接近有监督探针。
+- **合成对比样例**：让模型对同一段对话各写一条正常回复和一条有风险的回复，只用合成样例定方向，在真实样例上测试。成立的话，新概念只需要一句话定义。
+- **逐 token 读数**：风险常常只落在几个词上，整段取均值会冲淡它。
+- **新的封存测试集和预先登记的通过门槛**。
 - **已知方向之外的异常**：用概念子空间检测器，把"已有探针能解释的偏离"和"解释不了的偏离"分开。
 - **更大的正常语料**：扩到五千条以上，覆盖更多场景和英文。
 - **更多模型**：Qwen3-8B、Qwen3-14B、Llama-3.1-8B。

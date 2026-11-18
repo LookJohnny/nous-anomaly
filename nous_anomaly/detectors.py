@@ -244,4 +244,40 @@ class LinearProbe:
                     intercept=float(self.clf.intercept_[0]), threshold=0.5, meta=meta)
 
 
+class FewShotDirection:
+    """A concept from a handful of examples. The normal data supplies the geometry (standardise, PCA, whiten with
+    shrinkage); the direction is the mean of the k positive examples minus the normal mean in that whitened space.
+    With the normal covariance this is Fisher's discriminant, so nothing has to be estimated from the k examples
+    except their mean."""
+    name = "few_shot"
+
+    def __init__(self, components=128, shrink=0.1):
+        self.components, self.shrink = components, shrink
+
+    def fit_normal(self, X):
+        self.scaler = _Scaler().fit(np.asarray(X, dtype=np.float64))
+        Z = self.scaler(X)
+        self.pca = PCA(n_components=int(min(self.components, Z.shape[0] - 1, Z.shape[1])), random_state=0).fit(Z)
+        var = self.pca.explained_variance_
+        self.sd = np.sqrt(var + self.shrink * var.mean())
+        self.center = self._white(X).mean(0)
+        return self
+
+    def _white(self, X):
+        return self.pca.transform(self.scaler(X)) / self.sd
+
+    def fit_concept(self, X_positive, X_reference=None):
+        """X_reference: normal examples from the same setting as the positives (default: all the normal data)."""
+        center = self.center if X_reference is None else self._white(X_reference).mean(0)
+        w = self._white(X_positive).mean(0) - center
+        self.w, self.offset = w, float(center @ w)
+        return self
+
+    def fit(self, X_normal, X_positive, X_reference=None):
+        return self.fit_normal(X_normal).fit_concept(X_positive, X_reference)
+
+    def score(self, X):
+        return self._white(X) @ self.w - self.offset
+
+
 ONE_CLASS = {cls.name: cls for cls in (Mahalanobis, ContentFreeMahalanobis, KNN, IsoForest, AutoEncoder)}

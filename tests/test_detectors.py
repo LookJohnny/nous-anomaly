@@ -98,3 +98,21 @@ def test_autoencoder_if_torch_is_installed(world):
     pytest.importorskip("torch")
     det = AutoEncoder(epochs=15, bottleneck=16, hidden=64).fit(world["X"])
     assert _auc(det, world["fresh"], world["risky"]) > 0.8
+
+
+def test_few_shot_direction_beats_one_class_with_five_examples():
+    from nous_anomaly.detectors import FewShotDirection
+    w = World(3); X, groups = w.normal(); topic = w.topic_mean()
+    fresh = w.sample(300, topic); weak = w.sample(300, topic, shift=3.0 * w.risk)      # too small for one-class
+    example_topic = w.topic_mean()
+    examples = w.sample(40, example_topic, shift=3.0 * w.risk)
+    ref = w.sample(40, example_topic)               # normal examples from the same setting as the positives
+    one_class = _auc(Mahalanobis().fit(X), fresh, weak)
+    base = FewShotDirection().fit_normal(X)
+    aucs = {k: _auc(base.fit_concept(examples[:k], ref), fresh, weak) for k in (1, 5, 40)}
+    # Five examples in 96 dimensions give a noisy direction (expected AUROC about 0.88), still far above one-class.
+    assert one_class < 0.8 and aucs[5] > 0.85 and aucs[5] > one_class + 0.1 and aucs[40] > 0.95
+    assert aucs[40] >= aucs[5] - 0.02 and aucs[5] >= aucs[1] - 0.02
+    # Without that reference the result is about the same here: whitening already damps the topic offset.
+    assert abs(_auc(base.fit_concept(examples[:5]), fresh, weak) - aucs[5]) < 0.05
+    assert base.fit(X, examples[:5], ref).score(weak).mean() > base.score(fresh).mean()
