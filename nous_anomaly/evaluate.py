@@ -11,6 +11,9 @@ and for the emotion set new topics) above that threshold; it should stay near 0.
 two sets and should stay near 0.5.
 
   python -m nous_anomaly.evaluate fewshot --records data/records.jsonl --feats feats/qwen3-4b --out out/fewshot_val.json
+  python -m nous_anomaly.evaluate contrast --records ... --feats ... --out out/contrast_val.json   generated pairs -> real data
+  python -m nous_anomaly.evaluate basis    --records ... --feats ... --out out/basis.npz          for extract --token-basis
+  python -m nous_anomaly.evaluate tokens   --records ... --feats ... --out out/tokens_val.json    mean vs max over tokens
   python -m nous_anomaly.evaluate sweep  --records data/records.jsonl --feats feats/qwen3-4b --out out/sweep_val.json
   python -m nous_anomaly.evaluate freeze --sweep out/sweep_val.json --out out/FREEZE.json
   python -m nous_anomaly.evaluate test   --records data/records.jsonl --feats feats/qwen3-4b --freeze out/FREEZE.json --out out/test.json
@@ -139,13 +142,14 @@ def fewshot_settings(feats):
     return [("reply", "mean", mid), ("reply", "pre", deep), ("user", "mean", mid)]
 
 
-def fewshot(records, feats, *, split="val", ks=FEWSHOT_KS, draws=20, seed=0):
+def fewshot(records, feats, *, split="val", ks=FEWSHOT_KS, draws=20, seed=0, max_normal=None):
     """How many labelled examples does a concept need? For each concept and k: draw k positive dev examples, build
     the detector, score the evaluated split; repeat `draws` times.
       few_shot  whitened mean difference; geometry from ALL normal dev records of the site
       probe     logistic regression on the same k positives against the same-source normal dev records
       text      character n-gram classifier on the same examples
-    Positives and negatives of a concept come from the same source, as in evaluate()."""
+    Positives and negatives of a concept come from the same source, as in evaluate().
+    max_normal: fit the geometry on a random subset of that many normal records (effect of the normal corpus size)."""
     from .detectors import FewShotDirection
     out = dict(split=split, model=feats.meta.get("model"), draws=draws, runs=[])
     for site, pool, layer in fewshot_settings(feats):
@@ -154,8 +158,12 @@ def fewshot(records, feats, *, split="val", ks=FEWSHOT_KS, draws=20, seed=0):
         normal = [r for r in rs if r["split"] == "dev" and is_normal(r)]
         if len(normal) < 20:
             continue
-        base = FewShotDirection().fit_normal(X(normal))
-        run = dict(site=site, pool=pool, layer=layer, n_normal=len(normal), concepts={})
+        geometry = normal
+        if max_normal and max_normal < len(normal):
+            pick = np.random.default_rng(seed).choice(len(normal), max_normal, replace=False)
+            geometry = [normal[i] for i in pick]
+        base = FewShotDirection().fit_normal(X(geometry))
+        run = dict(site=site, pool=pool, layer=layer, n_normal=len(geometry), concepts={})
         for source in sorted({r["source"] for r in rs}):
             for concept in CONCEPTS:
                 tr_pos = [r for r in rs if r["split"] == "dev" and r["source"] == source and is_positive(r, concept)]
@@ -185,6 +193,109 @@ def fewshot(records, feats, *, split="val", ks=FEWSHOT_KS, draws=20, seed=0):
                         n=n, **{name: dict(mean=float(np.mean(v)), sd=float(np.std(v))) for name, v in scores.items()})
                 run["concepts"][f"{source}/{concept}"] = dict(n_pos=len(pos), n_neg=len(neg), n_dev_pos=len(tr_pos),
                                                                curve=curve)
+        out["runs"].append(run)
+    return out
+
+
+def token_basis(records, feats, *, depth_index=None, components=128):
+    """Principal components of the normal dev records (reply and user sites together, mean pooling) at one layer.
+    extract.py saves every token in these coordinates. Only the subspace is fixed here; whitening is redone later."""
+    from .detectors import FewShotDirection
+    layer = feats.layers[len(feats.layers) // 2 if depth_index is None else depth_index]
+    normal = [r for r in records if r["split"] == "dev" and is_normal(r) and r["id"] in feats]
+    base = FewShotDirection(components=components).fit_normal(feats.get([r["id"] for r in normal], "mean", layer))
+    return dict(layer=layer, mean=base.scaler.mean, scale=base.scaler.scale, components=base.pca.components_)
+
+
+TOKEN_POOLS = {"mean": lambda s: s.mean(), "max": lambda s: s.max(), "top5": lambda s: np.sort(s)[-5:].mean()}
+
+
+def tokens(records, feats, *, split="val", ks=(5, None), draws=20, seed=0):
+    """Does reading token by token beat the mean? The direction is built as in fewshot() from the per-record mean
+    of the saved token coordinates; each record is then scored by the mean, the maximum, or the mean of its five
+    highest token scores."""
+    from .detectors import FewShotDirection
+    out = dict(split=split, model=feats.meta.get("model"), layer=feats.meta.get("token_layer"), draws=draws, concepts={})
+    for site in ("reply", "user"):
+        rs = [r for r in records if r["site"] == site and r["id"] in feats]
+        T = dict(zip([r["id"] for r in rs], feats.tokens([r["id"] for r in rs])))
+        M = lambda items: np.stack([T[r["id"]].mean(0) for r in items])
+        normal = [r for r in rs if r["split"] == "dev" and is_normal(r)]
+        if len(normal) < 20:
+            continue
+        base = FewShotDirection(components=10 ** 6).fit_normal(M(normal))
+        for source in sorted({r["source"] for r in rs}):
+            for concept in CONCEPTS:
+                tr_pos = [r for r in rs if r["split"] == "dev" and r["source"] == source and is_positive(r, concept)]
+                tr_neg = [r for r in normal if r["source"] == source]
+                pos = [r for r in rs if r["split"] == split and r["source"] == source and is_positive(r, concept)]
+                neg = [r for r in rs if r["split"] == split and r["source"] == source and is_normal(r)]
+                if min(len(tr_pos), len(tr_neg), len(pos), len(neg)) < MIN_POSITIVES:
+                    continue
+                y = [1] * len(pos) + [0] * len(neg)
+                X_pos, X_neg = M(tr_pos), M(tr_neg)
+                rng = np.random.default_rng(seed); res = {}
+                for k in ks:
+                    n = len(tr_pos) if k is None else k
+                    if n > len(tr_pos):
+                        continue
+                    scores = {name: [] for name in TOKEN_POOLS}
+                    for _ in range(1 if n == len(tr_pos) else draws):
+                        base.fit_concept(X_pos[rng.choice(len(tr_pos), n, replace=False)], X_neg)
+                        per_token = [base.score(T[r["id"]]) for r in pos + neg]
+                        for name, pool in TOKEN_POOLS.items():
+                            scores[name].append(auroc(y, [pool(t) for t in per_token]))
+                    res["all" if k is None else str(k)] = {name: float(np.mean(v)) for name, v in scores.items()}
+                out["concepts"][f"{site}/{source}/{concept}"] = dict(n_pos=len(pos), n_neg=len(neg), k=res)
+    return out
+
+
+def contrast(records, feats, *, split="val", ks=(5, 20, None), draws=20, seed=0):
+    """Can a concept be defined by generated examples alone? Fit on the "syn" contrast pairs (the model's own reply
+    against its reply written to show the concept), test on the REAL labelled records of `split`.
+      few_shot  whitened difference between the two halves of the pairs; geometry from the normal dev records
+      probe     logistic regression on the pairs
+      text      character n-gram classifier on the pairs
+    The pre-reply state is the same for both halves of a pair, so only pools read on the reply are used."""
+    from .detectors import FewShotDirection
+    mid = feats.layers[len(feats.layers) // 2]
+    rs = [r for r in records if r["site"] == "reply" and r["id"] in feats]
+    out = dict(split=split, model=feats.meta.get("model"), draws=draws, runs=[])
+    for pool in ("mean", "early"):
+        X = lambda items: feats.get([r["id"] for r in items], pool, mid)
+        normal = [r for r in rs if r["split"] == "dev" and is_normal(r)]
+        base = FewShotDirection().fit_normal(X(normal))
+        run = dict(pool=pool, layer=mid, n_normal=len(normal), concepts={})
+        for concept in CONCEPTS:
+            syn = [r for r in rs if r["split"] == "syn" and r["meta"]["concept"] == concept]
+            s_pos = [r for r in syn if is_positive(r, concept)]
+            s_neg = [r for r in syn if not is_positive(r, concept)]
+            if min(len(s_pos), len(s_neg)) < MIN_POSITIVES:
+                continue
+            Xp, Xn = X(s_pos), X(s_neg)
+            for source in sorted({r["source"] for r in rs}):
+                pos = [r for r in rs if r["split"] == split and r["source"] == source and is_positive(r, concept)]
+                neg = [r for r in rs if r["split"] == split and r["source"] == source and is_normal(r)]
+                if min(len(pos), len(neg)) < MIN_POSITIVES:
+                    continue
+                y = [1] * len(pos) + [0] * len(neg); X_eval = X(pos + neg)
+                eval_text = [r["target"] for r in pos + neg]
+                rng = np.random.default_rng(seed); curve = {}
+                for k in ks:
+                    n = min(len(s_pos), len(s_neg)) if k is None else k
+                    if n > min(len(s_pos), len(s_neg)):
+                        continue
+                    scores = {"few_shot": [], "probe": [], "text": []}
+                    for _ in range(1 if k is None else draws):
+                        i, j = rng.choice(len(s_pos), n, replace=False), rng.choice(len(s_neg), n, replace=False)
+                        labels = [1] * n + [0] * n
+                        scores["few_shot"].append(auroc(y, base.fit_concept(Xp[i], Xn[j]).score(X_eval)))
+                        scores["probe"].append(auroc(y, LinearProbe().fit(np.concatenate([Xp[i], Xn[j]]), labels).score(X_eval)))
+                        if n >= 5:
+                            scores["text"].append(auroc(y, text_scores([s_pos[a]["target"] for a in i] + [s_neg[b]["target"] for b in j],
+                                                                        labels, eval_text)))
+                    curve["all" if k is None else str(k)] = dict(n=n, **{m: float(np.mean(v)) for m, v in scores.items() if v})
+                run["concepts"][f"{source}/{concept}"] = dict(n_pos=len(pos), n_neg=len(neg), n_pairs=len(s_pos), curve=curve)
         out["runs"].append(run)
     return out
 
@@ -264,6 +375,11 @@ def main(argv=None):
     p = sub.add_parser("fewshot")
     p.add_argument("--records", required=True); p.add_argument("--feats", required=True)
     p.add_argument("--out", required=True); p.add_argument("--draws", type=int, default=20)
+    p.add_argument("--max-normal", type=int)
+    for name in ("basis", "tokens", "contrast"):
+        p = sub.add_parser(name)
+        p.add_argument("--records", required=True); p.add_argument("--feats", required=True)
+        p.add_argument("--out", required=True)
     for name in ("sweep", "test"):
         p = sub.add_parser(name)
         p.add_argument("--records", required=True); p.add_argument("--feats", required=True)
@@ -282,11 +398,16 @@ def main(argv=None):
         _write(args.out, frozen); print(json.dumps(frozen, indent=1)); return
     records, feats = load(args.records), Features(args.feats)
     if args.command == "fewshot":
-        result = fewshot(records, feats, draws=args.draws)
+        result = fewshot(records, feats, draws=args.draws, max_normal=args.max_normal)
         _write(args.out, result)
         for method in ("few_shot", "probe", "text"):
             print(f"\n{method}\n" + fewshot_table(result, method))
         return
+    if args.command == "basis":
+        np.savez(args.out, **token_basis(records, feats)); return
+    if args.command in ("tokens", "contrast"):
+        result = tokens(records, feats) if args.command == "tokens" else contrast(records, feats)
+        _write(args.out, result); print(json.dumps(result, ensure_ascii=False, indent=1)); return
     if args.command == "sweep":
         result = sweep(records, feats, detectors=tuple(args.detectors))
     else:

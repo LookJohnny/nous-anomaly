@@ -140,3 +140,69 @@ def test_fewshot_curve_rises_with_examples_and_reports_all_methods():
     assert curve["5"]["few_shot"]["mean"] > 0.95 and curve["all"]["few_shot"]["sd"] == 0.0
     assert set(curve["5"]) == {"n", "few_shot", "probe", "text"}
     assert "c1/hostile" in evaluate.fewshot_table(result) and "k=all" in evaluate.fewshot_table(result, "text")
+
+
+def _with_pairs(records, feats, w_seed=0):
+    """Add generated contrast pairs for "hostile": same risky direction as the real data, different topics."""
+    w = World(w_seed); rng = np.random.default_rng(1)
+    for n in range(30):
+        topic = w.topic_mean()
+        for label in (0, 1):
+            rid = f"syn:hostile:{n}:{label}"
+            records.append(dict(id=rid, source="syn", site="reply", system=None, messages=[{"role": "user", "content": "问题"}],
+                                target=("滚开" if label else "好的") + rid, group=f"hostile:{n}", topic=None, split="syn",
+                                labels={"hostile": 1} if label else {}, meta={"concept": "hostile", "context": "x"}))
+            base = topic + rng.normal(size=len(topic))
+            feats.vectors[rid] = {1: base, 2: base + (8.0 * w.risk if label else 0)}
+    return records, feats
+
+
+def test_generated_pairs_define_a_direction_that_works_on_real_records():
+    records, feats = _with_pairs(*_records_and_features())
+    data.validate(records)
+    before = evaluate.fewshot(*_records_and_features(), draws=2, ks=(5,))
+    after = evaluate.fewshot(records, feats, draws=2, ks=(5,))
+    assert before["runs"][0] == after["runs"][0]                # "syn" records never leak into normal or evaluation data
+    result = evaluate.contrast(records, feats, draws=3)
+    run = result["runs"][0]
+    assert run["pool"] == "mean" and set(run["concepts"]) == {"c1/hostile"}     # anger has no pairs
+    curve = run["concepts"]["c1/hostile"]["curve"]
+    assert curve["all"]["n"] == 30 and curve["5"]["few_shot"] > 0.95 and curve["all"]["text"] > 0.95
+
+
+def test_fewshot_geometry_can_use_a_subset_of_the_normal_records():
+    records, feats = _records_and_features()
+    small = evaluate.fewshot(records, feats, draws=2, ks=(5,), max_normal=100)
+    assert small["runs"][0]["n_normal"] == 100 and evaluate.fewshot(records, feats, draws=2, ks=(5,))["runs"][0]["n_normal"] > 100
+
+
+def test_token_readout_finds_a_signal_carried_by_a_few_tokens():
+    records, feats = _records_and_features()
+    w = World(0); rng = np.random.default_rng(2); toks = {}
+    for r in records:
+        t = feats.vectors[r["id"]][1] + rng.normal(size=(20, 96))
+        if data.is_positive(r, "hostile") or data.is_positive(r, "anger") or data.is_positive(r, "distress"):
+            t[rng.choice(20, 2, replace=False)] += 12.0 * w.risk          # two of twenty tokens carry it
+        toks[r["id"]] = t
+    feats.tokens = lambda ids: [toks[i] for i in ids]
+    feats.meta = {"token_layer": 2}
+    result = evaluate.tokens(records, feats, draws=3)
+    k = result["concepts"]["reply/c1/hostile"]["k"]
+    assert set(result["concepts"]) == {"reply/c1/hostile", "reply/emo/anger", "user/c2/distress"}
+    assert k["all"]["max"] > k["all"]["mean"] and k["all"]["max"] > 0.95 and set(k) == {"5", "all"}
+
+
+def test_generated_records_are_valid_and_hide_the_instruction():
+    from nous_anomaly import generate
+    def fake(prompts, max_new_tokens=0):
+        return ["1. 怎么煮米饭才好吃？\n2、推荐一道家常菜\n- 推荐一道家常菜\n好" if m[-1]["content"].startswith(("请写", "Write"))
+                else "指令" if "数据构造任务" in (s or "") else "回复" for s, m in prompts]
+    normal = generate.normal_records(fake, per_cell=10)
+    assert len(normal) == 1000 and {r["split"] for r in normal} == {"dev", "val"} and all(data.is_normal(r) for r in normal)
+    assert normal[0]["messages"][0]["content"] == "怎么煮米饭才好吃？"           # numbering stripped, duplicates dropped
+    records, _ = _records_and_features()
+    pairs = generate.contrast_records(fake, records, per_concept=6, concepts=("hostile", "anger"))   # 2 distinct dialogues
+    data.validate(records + normal + pairs)
+    assert len(pairs) == 8 and all(r["split"] == "syn" and "数据构造任务" not in (r["system"] or "") for r in pairs)
+    assert [(r["target"], data.is_positive(r, "hostile")) for r in pairs[:2]] == [("回复", False), ("指令", True)]
+    assert pairs[-1]["labels"] == {"emotion": "anger"} and {r["meta"]["context"].split(":")[0] for r in pairs} == {"c1", "emo"}

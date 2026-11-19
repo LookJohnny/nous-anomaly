@@ -93,3 +93,22 @@ def test_run_shards_resume_and_read_back(tiny, tmp_path):
         config = model.config
         def __call__(self, *a, **k): raise AssertionError("recomputed a finished chunk")
     extract.run(Boom(), tok, device, records[:10], out, shard=(0, 2), chunk=2, log=lambda *_: None)
+
+
+def test_tokens_are_saved_in_the_basis_and_average_to_the_mean_pool(tiny, tmp_path):
+    tok, model, device = extract.load_model(tiny, device="cpu")
+    rng = np.random.default_rng(0)
+    np.savez(tmp_path / "basis.npz", layer=4, mean=rng.normal(size=32), scale=rng.uniform(0.5, 2, size=32),
+             components=np.linalg.qr(rng.normal(size=(32, 32)))[0][:6])
+    basis = extract.load_basis(tmp_path / "basis.npz", device)
+    records = [_reply(0), _reply(1, TEXTS[3]), _user(0)]
+    out = str(tmp_path / "feats")
+    extract.run(model, tok, device, records, out, chunk=2, log=lambda *_: None, basis=basis)
+    feats = extract.Features(out)
+    assert feats.meta["token_layer"] == 4
+    z = np.load(tmp_path / "basis.npz")
+    for r, t in zip(records, feats.tokens([r["id"] for r in records])):
+        a, b = extract.positions(tok, r)[2]
+        assert t.shape == (b - a, 6)
+        mean_pool = feats.get([r["id"]], "mean", 4)[0]
+        assert np.allclose(t.mean(0), ((mean_pool - z["mean"]) / z["scale"]) @ z["components"].T, atol=5e-2)

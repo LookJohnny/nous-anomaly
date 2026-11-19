@@ -9,7 +9,7 @@
 
 它是 [Nous Agent Safety](https://github.com/LookJohnny/nous-agent-safety) 的研究组件，对应其中"读取模型内部状态来监测风险"的方向。
 
-> 状态：研究原型。目前只在一个模型（Qwen3-4B）的验证集上跑过两轮，测试集没有开封。所有标签来自 LLM 评分者，没有人工校准。
+> 状态：研究原型。目前只在一个模型（Qwen3-4B）的验证集上跑过三轮，测试集没有开封。所有标签来自 LLM 评分者，没有人工校准。
 
 ## 第一轮结果
 
@@ -70,6 +70,67 @@
 
 这一轮同样是探索性的：验证集的敌意只有 12 个阳性样本，标签没有人工校准。
 
+## 第三轮结果：不用真实样例、逐 token 读数、更大的正常语料
+
+这一轮让模型自己写数据（`generate.py`），然后重新提取了全部 12159 条记录的激活。
+
+- **正常语料**：4999 条新对话，中英文各半，25 个主题 × 10 种提问类型，模型在没有系统提示的情况下作答。回复位置的正常样本从 1045 条增加到 4924 条。
+- **对比样例**：五个概念各 300 对。每一对是同一段对话的两条回复：模型自己的回复，和按一句话定义"刻意表现出该概念"写出的回复。读激活时用的是原始提示，那条指令不在其中。
+
+### 1. 只用合成样例定方向，在真实数据上测
+
+方向完全来自合成的成对回复，没有用任何一条真实的阳性样例。验证集，第 18 层。
+
+| 概念（真实数据） | 回复均值 | 回复前 16 个 token | 同样合成样例训练的文本分类器 | 对照：5 个真实样例（回复均值） |
+|---|---|---|---|---|
+| 敌意 | 0.84 | **0.96** | 0.84 | 0.92 |
+| 愤怒 | 1.00 | 1.00 | 0.78 | 1.00 |
+| 喜悦 | 0.98 | 0.90 | 0.74 | 1.00 |
+| 悲伤 | 1.00 | 0.84 | 0.93 | 1.00 |
+| 附和 | 0.53 | 0.58 | 0.68 | 0.64 |
+
+- **敌意和三种情绪成立。** 一句话定义加上模型自己写的样例，就能检出真实的敌意回复。只用 5 对合成样例时敌意已有 0.84（均值）和 0.92（前 16 个 token）。
+- **换对话来源也成立。** 事后把合成样例按对话来源拆开：完全不用敌意数据集的对话时，敌意仍是 0.83 和 0.94。
+- **在激活上迁移得比在文字上好。** 合成回复的用词和真实回复不同，文本分类器在愤怒、喜悦上只有 0.74–0.78，激活方向是 0.98–1.00。
+- **附和不成立。** 0.53–0.58，接近随机。只用附和数据集的对话来生成也一样（0.55–0.57）。按指令"顺着用户说"写出的回复，和模型真正附和时的内部状态不是一回事。
+
+### 2. 逐 token 读数
+
+把每个 token 的状态投影到正常语料的前 128 个主成分上保存，再比较三种汇总方式。
+
+| 概念 | 样例数 | 全部 token 取均值 | 取最大值 | 最高 5 个 token 的均值 |
+|---|---|---|---|---|
+| 敌意 | 5 | 0.94 | 0.93 | 0.96 |
+| 敌意 | 全部 | 0.94 | 0.94 | **0.98** |
+| 附和 | 全部 | 0.75 | 0.62 | 0.63 |
+| 用户困扰 | 全部 | 0.99 | 0.98 | 0.98 |
+
+敌意上"最高 5 个 token"比均值高 0.01–0.03，其他概念没有提升，附和反而变差。提升有限：敌意验证集只有 12 个阳性样本，这个差距在噪声范围内。
+
+### 3. 正常语料的规模
+
+少样例方向，敌意，回复均值，第 18 层。括号里是第二轮（只有原来三种场景的 1045 条）。
+
+| 正常样本数 | k=1 | k=5 | k=20 | 全部样例 |
+|---|---|---|---|---|
+| （第二轮）1045 | 0.84 | 0.89 | 0.89 | 0.90 |
+| 500 | 0.82 | 0.90 | 0.92 | 0.92 |
+| 1000 | 0.80 | 0.90 | 0.93 | 0.93 |
+| 2500 | 0.83 | 0.92 | 0.94 | 0.95 |
+| 4924 | 0.83 | 0.92 | 0.94 | 0.95 |
+
+- 更广的正常语料把敌意从 0.90 提到 0.95，和有监督探针持平。2500 条之后不再增长。
+- 起作用的主要是多样性：混入新场景的 500 条就比原来单一场景的 1045 条好。
+- 回复之前的读数没有变化（敌意 0.87，附和 0.75）。附和在回复均值上也没有变化（0.76）。
+
+### 这一轮的结论
+
+1. 对敌意和情绪语气，**新概念可以只靠一句话定义**，不需要收集真实样例。
+2. 附和是另一类问题：它不是一种语气，合成样例、逐 token 读数、更大的正常语料都没有帮助。
+3. 同样是探索性结果。合成样例没有经过检查，其中一部分取自本身带有敌意历史的对话，"正常"的那一半也可能带敌意。按对话来源拆分是事后做的。
+
+汇总指标：[`contrast`](results/contrast_val_qwen3-4b.json)、[`tokens`](results/tokens_val_qwen3-4b.json)、`results/fewshot_val_qwen3-4b_normal*.json`。
+
 ## 方法
 
 ### 读哪里的激活
@@ -126,7 +187,7 @@
 git clone https://github.com/LookJohnny/nous-anomaly.git
 cd nous-anomaly
 python -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m pytest -q        # 24 项；没有数据源时跳过 1 项
+.venv/bin/python -m pytest -q        # 29 项；没有数据源时跳过 1 项
 ```
 
 三步流程：
@@ -140,6 +201,15 @@ python -m nous_anomaly.extract --model Qwen/Qwen3-4B-Instruct-2507 \
 python -m nous_anomaly.evaluate fewshot --records data/records.jsonl \
     --feats feats/qwen3-4b --out out/fewshot_val.json
 
+# 可选：让模型自己写正常对话和对比样例，并入记录后重新提取（同时保存逐 token 状态）
+python -m nous_anomaly.generate normal   --model Qwen/Qwen3-4B-Instruct-2507 --out data/gen.jsonl
+python -m nous_anomaly.generate contrast --model Qwen/Qwen3-4B-Instruct-2507 \
+    --records data/records.jsonl --out data/syn.jsonl
+python -m nous_anomaly.evaluate basis --records data/records.jsonl --feats feats/qwen3-4b --out out/basis.npz
+#   提取时加 --token-basis out/basis.npz
+python -m nous_anomaly.evaluate contrast --records data/records.jsonl --feats feats/qwen3-4b-v2 --out out/contrast_val.json
+python -m nous_anomaly.evaluate tokens   --records data/records.jsonl --feats feats/qwen3-4b-v2 --out out/tokens_val.json
+
 # 2. 在验证集上扫描所有层和读数方式
 python -m nous_anomaly.evaluate sweep --records data/records.jsonl \
     --feats feats/qwen3-4b --out out/sweep_val.json
@@ -150,7 +220,7 @@ python -m nous_anomaly.evaluate test --records data/records.jsonl \
     --feats feats/qwen3-4b --freeze out/FREEZE.json --out out/test.json
 ```
 
-参考耗时：一张 RTX PRO 6000 上，4160 条记录的提取用了 138 秒。
+参考耗时：一张 RTX PRO 6000 上，4160 条记录的提取用了 138 秒；生成 5000 条正常对话和 3000 条对比回复约 25 分钟。
 
 ## 数据
 
@@ -187,26 +257,27 @@ python -m nous_anomaly.evaluate test --records data/records.jsonl \
 | 文件 | 内容 |
 |---|---|
 | [`nous_anomaly/data.py`](nous_anomaly/data.py) | 记录格式、校验、数据集适配器 |
-| [`nous_anomaly/extract.py`](nous_anomaly/extract.py) | 从任意 HuggingFace 因果语言模型提取激活，支持分片和断点续跑 |
+| [`nous_anomaly/extract.py`](nous_anomaly/extract.py) | 从任意 HuggingFace 因果语言模型提取激活，支持分片、断点续跑和逐 token 保存 |
+| [`nous_anomaly/generate.py`](nous_anomaly/generate.py) | 让被研究的模型自己写正常对话和成对的对比回复 |
 | [`nous_anomaly/detectors.py`](nous_anomaly/detectors.py) | 单类检测器、少样例方向和线性探针 |
 | [`nous_anomaly/evaluate.py`](nous_anomaly/evaluate.py) | 指标、bootstrap、换话题对照、冻结和一次性测试 |
 | [`tests/`](tests/) | 合成数据上的检测器测试；用随机初始化的微型模型验证取数位置 |
-| [`results/`](results/) | 两轮的汇总指标 |
+| [`results/`](results/) | 三轮的汇总指标 |
 
 ## 局限
 
 - 结果来自一个模型、一种语言、一轮验证集。
 - 标签来自 LLM 评分者，没有人工校准。
 - 数据集的测试部分在更早的研究中已被使用过，不是全新的封存集。
-- 正常样本只有一千多条，而且来自少数几种对话场景。更大、更多样的正常语料可能改变单类检测器的表现，目前没有验证。
+- 新增的正常语料和对比样例都是模型自己生成的，没有人工检查。
+- 第一轮的单类检测器没有在扩大后的正常语料上重跑。
 - 只读取了残差流的五个层，没有读注意力头或 MLP 的输出。
 
 ## 下一步
 
-- **合成对比样例**：让模型对同一段对话各写一条正常回复和一条有风险的回复，只用合成样例定方向，在真实样例上测试。成立的话，新概念只需要一句话定义。
-- **逐 token 读数**：风险常常只落在几个词上，整段取均值会冲淡它。
-- **新的封存测试集和预先登记的通过门槛**。
+- **附和**：需要另一种思路，例如读"模型是否知道用户说错了"和"回复是否纠正"之间的差，而不是找一个语气方向。
+- **新的封存测试集和预先登记的通过门槛**，包括"只用合成样例"这一条。
+- **更多概念**：用一句话定义试更多风险类型，看哪些像敌意一样成立，哪些像附和一样不成立。
 - **已知方向之外的异常**：用概念子空间检测器，把"已有探针能解释的偏离"和"解释不了的偏离"分开。
-- **更大的正常语料**：扩到五千条以上，覆盖更多场景和英文。
 - **更多模型**：Qwen3-8B、Qwen3-14B、Llama-3.1-8B。
-- **人工校准**：对评分者的标签做抽检。
+- **人工校准**：对评分者的标签和合成样例做抽检。

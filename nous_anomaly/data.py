@@ -9,7 +9,7 @@ A record:
   target    the text the state is read on
   group     template / scenario id; splits and bootstrap never separate one group
   topic     coarse topic, used for the topic-shift control (may be None)
-  split     dev | val | test
+  split     dev | val | test, or "syn" for generated contrast pairs (never counted as normal or as evaluation data)
   labels    {"hostile": 0/1, "distress": 0/1, "syco": 0/1, "emotion": "anger"|"joy"|"sadness"|"neutral"}
 
   python -m nous_anomaly.data --repo ~/ai-emotion-experiment/ai-emotion-experiment-main --out data/records.jsonl
@@ -112,7 +112,7 @@ def validate(records):
         if r["id"] in seen:
             raise ValueError("duplicate id " + r["id"])
         seen.add(r["id"])
-        if r["site"] not in ("reply", "user") or r["split"] not in ("dev", "val", "test"):
+        if r["site"] not in ("reply", "user") or r["split"] not in ("dev", "val", "test", "syn"):
             raise ValueError("bad site or split in " + r["id"])
         if not r["target"] or not isinstance(r["messages"], list) or not r["messages"]:
             raise ValueError("empty target or messages in " + r["id"])
@@ -151,8 +151,10 @@ def main(argv=None):
     ap.add_argument("--repo", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--sources", nargs="*", choices=sorted(LOADERS))
+    ap.add_argument("--extra", nargs="*", default=[], help="record files to append (output of nous_anomaly.generate)")
     args = ap.parse_args(argv)
-    records = load_repo(args.repo, args.sources)
+    records = load_repo(args.repo, args.sources) + [r for path in args.extra for r in load(path)]
+    validate(records)
     save(records, args.out)
     for key, n in sorted(summary(records).items()):
         print(*key, n, sep="\t")
