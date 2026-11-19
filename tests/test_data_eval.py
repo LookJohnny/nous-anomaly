@@ -216,8 +216,8 @@ def test_drift_set_rating_and_sealed_evaluation(tmp_path):
             c = m[-1]["content"]
             if "|||" in c:
                 out.append("\n".join(f"{i}. 我的订单{i}没到 ||| 已经等了{i}天 ||| 能帮我查一下吗" for i in range(1, 16)))
-            elif s == rate.RUBRIC:
-                out.append("3" if "滚" in c.split("【待评回复】")[1] else "0。")
+            elif c.startswith(rate.RUBRIC):
+                out.append("3" if "滚" in c.split("【待评回复】")[-1] else "0。")
             else:
                 out.append("滚" if "辱骂" in (s or "") or (temperature == 0.9 and "滚" in str(m) and len(out) % 3 == 0) else "好的")
         return out

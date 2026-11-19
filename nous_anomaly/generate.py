@@ -174,10 +174,19 @@ def drift_records(gen, *, per_domain=10, domains=DRIFT_DOMAINS, levels=DRIFT_LEV
     return out
 
 
+def more_samples(gen, records, *, level="insulting", n=30):
+    """Further sampled replies to the same prompts of one drift level (PREREG_V2: used when positives are too few)."""
+    seeds = [r for r in records if r["id"].endswith(f"-{level}-greedy")]
+    start = max(int(r["id"].rsplit("-s", 1)[1]) for r in records if f"-{level}-s" in r["id"]) + 1
+    many = [(r, start + i) for r in seeds for i in range(n)]
+    texts = gen([(r["system"], r["messages"]) for r, _ in many], max_new_tokens=120, temperature=0.9, top_p=0.95)
+    return [dict(r, id=r["id"].replace("-greedy", f"-s{i}"), target=t) for (r, i), t in zip(many, texts) if t]
+
+
 def main(argv=None):
     from .extract import load_model
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=("normal", "contrast", "drift"))
+    ap.add_argument("command", choices=("normal", "contrast", "drift", "drift-more"))
     ap.add_argument("--model", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--records", help="contrast: where the dialogues come from")
@@ -189,6 +198,8 @@ def main(argv=None):
     gen = make_generator(model, tok, device, batch=args.batch)
     if args.command == "drift":
         records = drift_records(gen)
+    elif args.command == "drift-more":
+        records = more_samples(gen, load(args.records))
     elif args.command == "normal":
         records = normal_records(gen, per_cell=args.per_cell)
     else:

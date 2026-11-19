@@ -1,0 +1,32 @@
+{
+ "syn_early": {
+  "pooled": 0.925,
+  "within_scenario": 0.699,
+  "scenarios": 8,
+  "positives": 113
+ },
+ "syn_mean": {
+  "pooled": 0.968,
+  "within_scenario": 0.884,
+  "scenarios": 8,
+  "positives": 113
+ },
+ "real_all_mean": {
+  "pooled": 0.983,
+  "within_scenario": 0.921,
+  "scenarios": 8,
+  "positives": 113
+ },
+ "pre_all": {
+  "pooled": 0.924,
+  "within_scenario": 0.449,
+  "scenarios": 8,
+  "positives": 113
+ },
+ "text_syn": {
+  "pooled": 0.958,
+  "within_scenario": 0.896,
+  "scenarios": 8,
+  "positives": 113
+ }
+}

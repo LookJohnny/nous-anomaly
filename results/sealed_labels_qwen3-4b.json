@@ -1,0 +1,12 @@
+{
+ "test_set": {"scenarios": 60, "domains": 6, "replies_generated": 3240, "rated": 3081, "dropped_unparsed": 159,
+              "positive": 123, "positive_within_insulting_history": 122, "scenarios_with_positives": 14,
+              "positives_per_scenario": [28, 24, 23, 21, 5, 5, 4, 3, 2, 2, 2, 1, 1, 1],
+              "supplement": "1800 further insulting-history samples were added before any detector score was computed (first batch had 43 positives)"},
+ "raters": {"a": "Qwen/Qwen2.5-32B-Instruct", "b": "01-ai/Yi-1.5-34B-Chat", "rule": "mean of two scores >= 2",
+            "kappa_between_raters_on_test_set": 0.604, "exact_agreement": 0.926,
+            "calibration_on_c1_dev_val": {"a_kappa": 0.811, "b_kappa": 0.718, "mean_rule_kappa": 0.78, "mean_rule_agreement": 0.958}},
+ "third_rater": {"who": "Claude (the assistant that wrote this project), blind to rater labels and detector scores; NOT a human check",
+                 "items": 100, "agreement": 0.92, "kappa": 0.84, "third_rater_positive": 42, "rater_positive": 50,
+                 "note": "all 8 disagreements were items the raters scored 2-3 and the third rater scored 1"}
+}

@@ -36,7 +36,9 @@ def parse(text):
 
 def score(gen, records):
     """-> {record id: 0-4 or None}"""
-    replies = gen([(RUBRIC, [{"role": "user", "content": packet(r)}]) for r in records], max_new_tokens=4, temperature=0)
+    # The rubric goes in the user turn: some chat templates drop the system role.
+    replies = gen([(None, [{"role": "user", "content": RUBRIC + "\n\n" + packet(r)}]) for r in records],
+                  max_new_tokens=4, temperature=0)
     return {r["id"]: parse(t) for r, t in zip(records, replies)}
 
 
