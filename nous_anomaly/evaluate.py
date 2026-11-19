@@ -14,6 +14,7 @@ two sets and should stay near 0.5.
   python -m nous_anomaly.evaluate contrast --records ... --feats ... --out out/contrast_val.json   generated pairs -> real data
   python -m nous_anomaly.evaluate basis    --records ... --feats ... --out out/basis.npz          for extract --token-basis
   python -m nous_anomaly.evaluate tokens   --records ... --feats ... --out out/tokens_val.json    mean vs max over tokens
+  python -m nous_anomaly.evaluate sealed   --records ... --feats A B --out out/sealed_test.json    PREREG_V2.md; runs once
   python -m nous_anomaly.evaluate sweep  --records data/records.jsonl --feats feats/qwen3-4b --out out/sweep_val.json
   python -m nous_anomaly.evaluate freeze --sweep out/sweep_val.json --out out/FREEZE.json
   python -m nous_anomaly.evaluate test   --records data/records.jsonl --feats feats/qwen3-4b --freeze out/FREEZE.json --out out/test.json
@@ -300,6 +301,96 @@ def contrast(records, feats, *, split="val", ks=(5, 20, None), draws=20, seed=0)
     return out
 
 
+def sealed(records, feats, *, n_boot=1000, draws=20, seed=0):
+    """The preregistered test (PREREG_V2.md). Everything is fitted on dev / generated data; the test split is only
+    scored. Hostility is evaluated on the new sealed set "hx" and on the old test split of "c1", overall and WITHIN
+    the insulting-history level, where the conversation history is the same kind for positives and negatives."""
+    from .detectors import FewShotDirection
+    layers = feats.layers; mid, deep = layers[len(layers) // 2], layers[-1]
+    rs = [r for r in records if r["site"] == "reply" and r["id"] in feats]
+    X = lambda items, pool, layer: feats.get([r["id"] for r in items], pool, layer)
+    normal = [r for r in rs if r["split"] == "dev" and is_normal(r)]
+    base = {(pool, layer): FewShotDirection().fit_normal(X(normal, pool, layer))
+            for pool, layer in (("early", mid), ("mean", mid), ("pre", deep))}
+    syn = lambda concept, label: [r for r in rs if r["split"] == "syn" and r["meta"]["concept"] == concept
+                                  and is_positive(r, concept) == label]
+    real = lambda source, concept, label: [r for r in rs if r["split"] == "dev" and r["source"] == source and
+                                           (is_positive(r, concept) if label else is_normal(r))]
+
+    def direction(pos, neg, pool, layer):
+        b = base[(pool, layer)]
+        w = b._white(X(pos, pool, layer)).mean(0) - b._white(X(neg, pool, layer)).mean(0)
+        return lambda items: b._white(X(items, pool, layer)) @ w
+
+    def text(pos, neg):
+        return lambda items: text_scores([r["target"] for r in pos + neg], [1] * len(pos) + [0] * len(neg),
+                                         [r["target"] for r in items])
+
+    def few(pos, neg, pool, layer, k):
+        rng = np.random.default_rng(seed)
+        fns = [direction([pos[i] for i in rng.choice(len(pos), k, replace=False)], neg, pool, layer) for _ in range(draws)]
+        return lambda items: np.mean([_rank(f(items)) for f in fns], axis=0)       # mean rank over the draws
+
+    def report(items, concept, methods, paired=()):
+        y = np.array([int(is_positive(r, concept)) for r in items]); groups = [_gkey(r) for r in items]
+        out = dict(n_pos=int(y.sum()), n_neg=int(len(y) - y.sum()), methods={})
+        if min(out["n_pos"], out["n_neg"]) < MIN_POSITIVES:
+            return out
+        scores = {name: np.asarray(fn(items), dtype=float) for name, fn in methods.items()}
+        for name, sc in scores.items():
+            out["methods"][name] = dict(auroc=auroc(y, sc), ci=bootstrap(y, sc, groups, n=n_boot),
+                                        recall_at_fpr5=recall_at_fpr(y, sc))
+        for a, b in paired:
+            out[f"{a}_minus_{b}"] = _paired(y, scores[a], scores[b], groups, n_boot)
+        return out
+
+    result = dict(model=feats.meta.get("model"), n_normal=len(normal), hostile={}, other={})
+    sp, sn = syn("hostile", True), syn("hostile", False)
+    rp, rn = real("c1", "hostile", True), real("c1", "hostile", False)
+    probe = LinearProbe().fit(X(rp + rn, "mean", mid), [1] * len(rp) + [0] * len(rn))
+    methods = {"syn_early": direction(sp, sn, "early", mid), "syn_mean": direction(sp, sn, "mean", mid),
+               "text_syn": text(sp, sn), "real5_mean": few(rp, rn, "mean", mid, 5),
+               "real_all_mean": direction(rp, rn, "mean", mid), "probe_mean": lambda items: probe.score(X(items, "mean", mid)),
+               "pre_all": direction(rp, rn, "pre", deep), "text_real": text(rp, rn)}
+    for source in ("hx", "c1"):
+        test = [r for r in rs if r["split"] == "test" and r["source"] == source]
+        within = [r for r in test if r["meta"]["level"] == "insulting"]
+        paired = (("syn_early", "text_syn"),)
+        result["hostile"][source] = dict(overall=report(test, "hostile", methods, paired),
+                                         within_insulting=report(within, "hostile", methods, paired))
+    # Secondary, no thresholds: the old test splits of the emotion and sycophancy sets.
+    for concept in ("anger", "joy", "sadness"):
+        test = [r for r in rs if r["split"] == "test" and r["source"] == "emo" and (is_positive(r, concept) or is_normal(r))]
+        ep, en = syn(concept, True), syn(concept, False)
+        if min(len(ep), len(en), len(test)) < MIN_POSITIVES:
+            continue
+        result["other"][f"emo/{concept}"] = report(test, concept, {"syn_mean": direction(ep, en, "mean", mid), "text_syn": text(ep, en)})
+    test = [r for r in rs if r["split"] == "test" and r["source"] == "syco"]
+    yp, yn = real("syco", "syco", True), real("syco", "syco", False)
+    ep, en = syn("syco", True), syn("syco", False)
+    if min(len(yp), len(yn), len(ep), len(en), len(test)) >= MIN_POSITIVES:
+        result["other"]["syco/syco"] = report(test, "syco", {"syn_mean": direction(ep, en, "mean", mid),
+                                                              "real_all_mean": direction(yp, yn, "mean", mid),
+                                                              "pre_all": direction(yp, yn, "pre", deep), "text_real": text(yp, yn)})
+    return result
+
+
+def _rank(s):
+    return np.argsort(np.argsort(s)) / max(1, len(s) - 1)
+
+
+def _paired(y, a, b, groups, n=1000, seed=0):
+    """AUROC(a) - AUROC(b) with a 95% interval, resampling whole groups."""
+    groups = np.asarray(groups); members = {g: np.flatnonzero(groups == g) for g in set(groups.tolist())}
+    keys = sorted(members); rng = np.random.default_rng(seed); values = []
+    for _ in range(n):
+        idx = np.concatenate([members[keys[i]] for i in rng.integers(0, len(keys), len(keys))])
+        d = auroc(y[idx], a[idx]) - auroc(y[idx], b[idx])
+        if not np.isnan(d):
+            values.append(d)
+    return dict(diff=auroc(y, a) - auroc(y, b), ci=[float(np.quantile(values, 0.025)), float(np.quantile(values, 0.975))] if values else None)
+
+
 def fewshot_table(result, method="few_shot"):
     ks = ["1", "2", "5", "10", "20", "all"]
     lines = [f"| site | pool | layer | concept | eval pos | " + " | ".join("k=" + k for k in ks) + " |",
@@ -376,9 +467,9 @@ def main(argv=None):
     p.add_argument("--records", required=True); p.add_argument("--feats", required=True)
     p.add_argument("--out", required=True); p.add_argument("--draws", type=int, default=20)
     p.add_argument("--max-normal", type=int)
-    for name in ("basis", "tokens", "contrast"):
+    for name in ("basis", "tokens", "contrast", "sealed"):
         p = sub.add_parser(name)
-        p.add_argument("--records", required=True); p.add_argument("--feats", required=True)
+        p.add_argument("--records", required=True); p.add_argument("--feats", required=True, nargs="+")
         p.add_argument("--out", required=True)
     for name in ("sweep", "test"):
         p = sub.add_parser(name)
@@ -396,7 +487,10 @@ def main(argv=None):
         if os.path.exists(args.out):
             raise SystemExit("freeze file already exists; a freeze is written once")
         _write(args.out, frozen); print(json.dumps(frozen, indent=1)); return
-    records, feats = load(args.records), Features(args.feats)
+    if args.command == "sealed" and os.path.exists(args.out):
+        raise SystemExit("sealed test results already exist; the test split is opened once")
+    records = load(args.records)
+    feats = Features(*args.feats) if isinstance(args.feats, list) else Features(args.feats)
     if args.command == "fewshot":
         result = fewshot(records, feats, draws=args.draws, max_normal=args.max_normal)
         _write(args.out, result)
@@ -405,8 +499,8 @@ def main(argv=None):
         return
     if args.command == "basis":
         np.savez(args.out, **token_basis(records, feats)); return
-    if args.command in ("tokens", "contrast"):
-        result = tokens(records, feats) if args.command == "tokens" else contrast(records, feats)
+    if args.command in ("tokens", "contrast", "sealed"):
+        result = {"tokens": tokens, "contrast": contrast, "sealed": sealed}[args.command](records, feats)
         _write(args.out, result); print(json.dumps(result, ensure_ascii=False, indent=1)); return
     if args.command == "sweep":
         result = sweep(records, feats, detectors=tuple(args.detectors))

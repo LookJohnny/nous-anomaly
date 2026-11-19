@@ -206,3 +206,42 @@ def test_generated_records_are_valid_and_hide_the_instruction():
     assert len(pairs) == 8 and all(r["split"] == "syn" and "数据构造任务" not in (r["system"] or "") for r in pairs)
     assert [(r["target"], data.is_positive(r, "hostile")) for r in pairs[:2]] == [("回复", False), ("指令", True)]
     assert pairs[-1]["labels"] == {"emotion": "anger"} and {r["meta"]["context"].split(":")[0] for r in pairs} == {"c1", "emo"}
+
+
+def test_drift_set_rating_and_sealed_evaluation(tmp_path):
+    from nous_anomaly import generate, rate
+    def fake(prompts, max_new_tokens=0, temperature=1, top_p=1):
+        out = []
+        for s, m in prompts:
+            c = m[-1]["content"]
+            if "|||" in c:
+                out.append("\n".join(f"{i}. 我的订单{i}没到 ||| 已经等了{i}天 ||| 能帮我查一下吗" for i in range(1, 16)))
+            elif s == rate.RUBRIC:
+                out.append("3" if "滚" in c.split("【待评回复】")[1] else "0。")
+            else:
+                out.append("滚" if "辱骂" in (s or "") or (temperature == 0.9 and "滚" in str(m) and len(out) % 3 == 0) else "好的")
+        return out
+    hx = generate.drift_records(fake)
+    assert len(hx) == 1440 and all("数据构造任务" not in r["system"] for r in hx) and {r["split"] for r in hx} == {"test"}
+    scores = rate.score(fake, hx)
+    rated, stats = rate.combine(hx, [scores, dict(scores, **{hx[0]["id"]: None})])
+    assert stats["dropped"] == 1 and stats["kappa"] == 1.0 and 0 < stats["positive"] < 900
+    assert all(r["meta"]["level"] == "insulting" for r in rated if r["labels"]["hostile"])
+    assert rate.sheet(rated, tmp_path / "sheet.csv") == 100 and rate.human(rated, tmp_path / "sheet.csv") == {"filled": 0}
+    assert rate.kappa([1, 1, 0, 0], [1, 0, 0, 0]) == pytest.approx(0.5) and rate.parse("评分：2") == 2 and rate.parse("无") is None
+
+    # Sealed evaluation on synthetic vectors: the signal sits on the risky direction of layer 2 for hostile replies.
+    records, feats = _with_pairs(*_records_and_features())
+    for r in records:
+        r.setdefault("meta", {})["level"] = "insulting" if r["source"] == "c1" else "x"
+    w = World(0); rng = np.random.default_rng(3)
+    for r in rated[:400]:
+        records.append(r); base = w.sample(1, w.topic_mean())[0]
+        feats.vectors[r["id"]] = {1: base, 2: base + (8.0 * w.risk if r["labels"]["hostile"] else 0)}
+    result = evaluate.sealed(records, feats, n_boot=50, draws=3)
+    new, old = result["hostile"]["hx"], result["hostile"]["c1"]
+    assert new["within_insulting"]["n_pos"] > 20 and new["overall"]["n_neg"] > new["within_insulting"]["n_neg"]
+    m = new["within_insulting"]["methods"]
+    assert m["syn_early"]["auroc"] > 0.95 and m["real5_mean"]["auroc"] > 0.95 and m["syn_early"]["ci"][0] > 0.9
+    assert set(m) == {"syn_early", "syn_mean", "text_syn", "real5_mean", "real_all_mean", "probe_mean", "pre_all", "text_real"}
+    assert "syn_early_minus_text_syn" in new["within_insulting"] and old["overall"]["n_pos"] == 30

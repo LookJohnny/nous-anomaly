@@ -128,11 +128,12 @@ def run(model, tok, device, records, out_dir, *, depths=DEPTHS, shard=(0, 1), ch
 class Features:
     """All chunks of one model's features, addressed by record id."""
 
-    def __init__(self, out_dir):
-        with open(os.path.join(out_dir, "meta.json")) as f:
+    def __init__(self, *out_dirs):
+        """One or more feature directories of the same model (later ones add records, e.g. a sealed test set)."""
+        with open(os.path.join(out_dirs[0], "meta.json")) as f:
             self.meta = json.load(f)
         ids, xs, self.tok = [], [], []
-        for path in sorted(glob.glob(os.path.join(out_dir, "feats-*.npz"))):
+        for path in sorted(p for d in out_dirs for p in glob.glob(os.path.join(d, "feats-*.npz"))):
             if path.endswith(".tmp.npz"):
                 continue
             z = np.load(path)
