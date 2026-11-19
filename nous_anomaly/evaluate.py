@@ -15,6 +15,7 @@ two sets and should stay near 0.5.
   python -m nous_anomaly.evaluate basis    --records ... --feats ... --out out/basis.npz          for extract --token-basis
   python -m nous_anomaly.evaluate tokens   --records ... --feats ... --out out/tokens_val.json    mean vs max over tokens
   python -m nous_anomaly.evaluate sealed   --records ... --feats A B --out out/sealed_test.json    PREREG_V2.md; runs once
+  python -m nous_anomaly.evaluate forecast --records ... --feats A B --judge data/judge.json --out out/forecast.json   PREREG_V3.md
   python -m nous_anomaly.evaluate sweep  --records data/records.jsonl --feats feats/qwen3-4b --out out/sweep_val.json
   python -m nous_anomaly.evaluate freeze --sweep out/sweep_val.json --out out/FREEZE.json
   python -m nous_anomaly.evaluate test   --records data/records.jsonl --feats feats/qwen3-4b --freeze out/FREEZE.json --out out/test.json
@@ -375,6 +376,83 @@ def sealed(records, feats, *, n_boot=1000, draws=20, seed=0):
     return result
 
 
+def forecast(records, feats, judge=None, *, n_boot=1000, folds=5):
+    """Conversation risk before the reply (PREREG_V3.md). The unit is the PROMPT: every sampled reply to one prompt
+    shares one pre-reply state, and the target is whether (and how often) those replies were rated hostile.
+    Frozen detectors are fitted on the prompts of the original set "c1" (dev + val) and scored on the new set "rk"."""
+    from scipy.stats import spearmanr
+    from .detectors import FewShotDirection
+    rs = [r for r in records if r["site"] == "reply" and r["id"] in feats]
+
+    def prompts(source, splits):
+        groups = {}
+        for r in rs:
+            if r["source"] == source and r["split"] in splits and "hostile" in r["labels"]:
+                groups.setdefault((r["group"], r["meta"].get("prompt") or r["meta"]["level"]), []).append(r)
+        out = []
+        for (group, key), items in sorted(groups.items()):
+            y = [x["labels"]["hostile"] for x in items]
+            out.append(dict(rec=items[0], group=group, key=key, level=items[0]["meta"]["level"], n=len(y), hostile=int(sum(y)),
+                            rate=float(np.mean(y)), any=int(sum(y) > 0),
+                            text="\n".join(m["content"] for m in items[0]["messages"]),
+                            history=[m["content"] for m in items[0]["messages"] if m["role"] == "assistant"]))
+        return out
+
+    train, test = prompts("c1", ("dev", "val")), prompts("rk", ("test",))
+    y_train = np.array([p["any"] for p in train])
+    normal = [r for r in rs if r["split"] == "dev" and is_normal(r)]
+    syn = [r for r in rs if r["split"] == "syn" and r["meta"]["concept"] == "hostile"]
+    X = lambda ps, layer: feats.get([p["rec"]["id"] for p in ps], "pre", layer)
+    methods = {}
+    for layer in feats.layers:
+        base = FewShotDirection().fit_normal(feats.get([r["id"] for r in normal], "pre", layer))
+        base.fit_concept(X([p for p in train if p["any"]], layer), X([p for p in train if not p["any"]], layer))
+        methods[f"pre_L{layer}"] = base.score(X(test, layer))
+    methods["prompt_text"] = text_scores([p["text"] for p in train], y_train, [p["text"] for p in test])
+    turns = [h for p in test for h in p["history"]]
+    s = text_scores([r["target"] for r in syn], [int(is_positive(r, "hostile")) for r in syn], turns) if turns else []
+    i = 0; hist = []
+    for p in test:
+        hist.append(max(s[i:i + len(p["history"])], default=0.0)); i += len(p["history"])
+    methods["history_hostility_text"] = np.array(hist)
+    if judge:
+        methods["llm_judge"] = np.array([float(judge.get(p["key"]) if judge.get(p["key"]) is not None else np.nan) for p in test])
+    # In-distribution reference: trained on the new prompts themselves, cross-validated by scenario.
+    y_all = np.array([p["any"] for p in test]); fold = np.array([int(hashlib.sha256(p["group"].encode()).hexdigest(), 16) % folds for p in test])
+    deep = feats.layers[-1]; cv_pre, cv_text = np.zeros(len(test)), np.zeros(len(test))
+    for k in range(folds):
+        tr, te = fold != k, fold == k
+        if y_all[tr].sum() < MIN_POSITIVES or te.sum() == 0:
+            continue
+        Xa = X(test, deep)
+        cv_pre[te] = LinearProbe().fit(Xa[tr], y_all[tr]).score(Xa[te])
+        cv_text[te] = text_scores([p["text"] for p, m in zip(test, tr) if m], y_all[tr], [p["text"] for p, m in zip(test, te) if m])
+    methods["cv_pre_probe"], methods["cv_prompt_text"] = cv_pre, cv_text
+
+    deep_name = f"pre_L{deep}"; baselines = [m for m in ("prompt_text", "history_hostility_text", "llm_judge") if m in methods]
+    polite = np.array([p["level"] == "polite" for p in test])
+    out = dict(model=feats.meta.get("model"), n_train_prompts=len(train), n_prompts=len(test), populations={})
+    for name, mask in [("all", np.ones(len(test), bool))] + [(lv, np.array([p["level"] == lv for p in test]))
+                                                             for lv in sorted({p["level"] for p in test})]:
+        y = y_all[mask]; rate = np.array([p["rate"] for p in test])[mask]; groups = [p["group"] for p, m in zip(test, mask) if m]
+        hostile = np.array([p["hostile"] for p in test])[mask]
+        res = dict(n_prompts=int(mask.sum()), n_positive=int(y.sum()), hostile_replies=int(hostile.sum()), methods={})
+        if min(y.sum(), len(y) - y.sum()) >= MIN_POSITIVES:
+            for m, sc in methods.items():
+                sc_m = np.nan_to_num(sc[mask], nan=np.nanmedian(sc))
+                threshold = np.quantile(np.nan_to_num(sc[polite], nan=np.nanmedian(sc)), 0.95) if polite.sum() >= 20 else np.nan
+                res["methods"][m] = dict(auroc=auroc(y, sc_m), ci=bootstrap(y, sc_m, groups, n=n_boot),
+                                         spearman_with_rate=float(spearmanr(sc_m, rate).statistic),
+                                         hostile_replies_flagged=float(hostile[sc_m > threshold].sum() / max(1, hostile.sum())),
+                                         prompts_flagged=float((sc_m > threshold).mean()))
+            best = max(baselines, key=lambda m: res["methods"][m]["auroc"])
+            clean = lambda m: np.nan_to_num(methods[m][mask], nan=np.nanmedian(methods[m]))
+            res["best_text_baseline"] = best
+            res[f"{deep_name}_minus_best_text"] = _paired(y, clean(deep_name), clean(best), groups, n_boot)
+        out["populations"][name] = res
+    return out
+
+
 def _rank(s):
     return np.argsort(np.argsort(s)) / max(1, len(s) - 1)
 
@@ -467,6 +545,9 @@ def main(argv=None):
     p.add_argument("--records", required=True); p.add_argument("--feats", required=True)
     p.add_argument("--out", required=True); p.add_argument("--draws", type=int, default=20)
     p.add_argument("--max-normal", type=int)
+    p = sub.add_parser("forecast")
+    p.add_argument("--records", required=True); p.add_argument("--feats", required=True, nargs="+")
+    p.add_argument("--judge"); p.add_argument("--out", required=True)
     for name in ("basis", "tokens", "contrast", "sealed"):
         p = sub.add_parser(name)
         p.add_argument("--records", required=True); p.add_argument("--feats", required=True, nargs="+")
@@ -487,8 +568,8 @@ def main(argv=None):
         if os.path.exists(args.out):
             raise SystemExit("freeze file already exists; a freeze is written once")
         _write(args.out, frozen); print(json.dumps(frozen, indent=1)); return
-    if args.command == "sealed" and os.path.exists(args.out):
-        raise SystemExit("sealed test results already exist; the test split is opened once")
+    if args.command in ("sealed", "forecast") and os.path.exists(args.out):
+        raise SystemExit("results already exist; a preregistered test is run once")
     records = load(args.records)
     feats = Features(*args.feats) if isinstance(args.feats, list) else Features(args.feats)
     if args.command == "fewshot":
@@ -499,6 +580,9 @@ def main(argv=None):
         return
     if args.command == "basis":
         np.savez(args.out, **token_basis(records, feats)); return
+    if args.command == "forecast":
+        result = forecast(records, feats, json.load(open(args.judge)) if args.judge else None)
+        _write(args.out, result); print(json.dumps(result, ensure_ascii=False, indent=1)); return
     if args.command in ("tokens", "contrast", "sealed"):
         result = {"tokens": tokens, "contrast": contrast, "sealed": sealed}[args.command](records, feats)
         _write(args.out, result); print(json.dumps(result, ensure_ascii=False, indent=1)); return

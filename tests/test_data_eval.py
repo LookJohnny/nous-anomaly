@@ -245,3 +245,50 @@ def test_drift_set_rating_and_sealed_evaluation(tmp_path):
     assert m["syn_early"]["auroc"] > 0.95 and m["real5_mean"]["auroc"] > 0.95 and m["syn_early"]["ci"][0] > 0.9
     assert set(m) == {"syn_early", "syn_mean", "text_syn", "real5_mean", "real_all_mean", "probe_mean", "pre_all", "text_real"}
     assert "syn_early_minus_text_syn" in new["within_insulting"] and old["overall"]["n_pos"] == 30
+
+
+def test_risk_set_and_prompt_level_forecast():
+    from nous_anomaly import generate, rate
+    def fake(prompts, max_new_tokens=0, temperature=1, top_p=1):
+        out = []
+        for s, m in prompts:
+            c = m[-1]["content"]
+            if "|||" in c:
+                out.append("\n".join(f"订单{len(out)}-{i}没到 ||| 等了{i}天 ||| 帮我查一下" for i in range(12)))
+            elif c.startswith("把下面这句"):
+                out.append("蠢货，" + c.split("\n\n")[-1])
+            elif c.startswith(rate.FORECAST):
+                out.append("3" if "滚" in c else "0")
+            else:
+                out.append("滚" if "辱骂" in (s or "") else "好的")
+        return out
+    rk = generate.risk_records(fake, per_domain=4, samples=3, domains=["客服", "陪伴"], calls=1)
+    assert len(rk) == 2 * 4 * 3 * 3 and {r["meta"]["level"] for r in rk} == {"insulting", "polite", "curt", "sarcastic", "rude_user"}
+    rude = [r for r in rk if r["meta"]["level"] == "rude_user"]
+    assert rude[0]["messages"][-1]["content"].startswith("蠢货，") and rude[0]["messages"][1]["content"] == "好的"
+    judge = rate.forecast(fake, rk)
+    assert len(judge) == 24 and set(judge.values()) == {0, 3} and judge[rk[0]["meta"]["prompt"]] == 3
+
+    # Forecast evaluation on synthetic vectors: risky prompts carry the signal before the reply.
+    records, feats = _with_pairs(*_records_and_features())
+    feats.layers = [2]
+    w = World(0); rng = np.random.default_rng(5); n = 0
+    for r in records:                                   # in the old set, hostile and plain replies come from different prompts
+        r.setdefault("meta", {})["level"] = "insulting" if r["labels"].get("hostile") else "polite"
+    for g in range(60):
+        for level in ("insulting", "polite"):
+            risky = level == "insulting" and g % 3 == 0
+            base = w.sample(1, w.topic_mean())[0] + (8.0 * w.risk if risky else 0)
+            for k in range(4):
+                rid = f"rk:{g}-{level}-s{k}"; n += 1
+                records.append(dict(id=rid, source="rk", site="reply", system=None, messages=[{"role": "user", "content": f"问题{g}"}],
+                                    target="回复", group=f"g{g}", topic=None, split="test", labels={"hostile": int(risky and k < 2)},
+                                    meta={"level": level, "prompt": f"{g}-{level}"}))
+                feats.vectors[rid] = {1: base, 2: base}
+    result = evaluate.forecast(records, feats, {f"{g}-insulting": g % 2 for g in range(60)}, n_boot=50)
+    pop = result["populations"]["insulting"]
+    assert result["n_prompts"] == 120 and pop["n_prompts"] == 60 and pop["n_positive"] == 20 and pop["hostile_replies"] == 40
+    assert pop["methods"]["pre_L2"]["auroc"] > 0.95 and pop["methods"]["pre_L2"]["spearman_with_rate"] > 0.6
+    assert pop["methods"]["pre_L2"]["hostile_replies_flagged"] > 0.9 and pop["methods"]["prompt_text"]["auroc"] < 0.75
+    assert pop["pre_L2_minus_best_text"]["ci"][0] > 0 and "llm_judge" in pop["methods"]
+    assert result["populations"]["polite"]["methods"] == {}
